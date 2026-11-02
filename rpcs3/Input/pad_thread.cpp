@@ -32,6 +32,9 @@
 #include "Utilities/Thread.h"
 #include "util/atomic.hpp"
 
+#include <cmath>
+#include <numbers>
+
 LOG_CHANNEL(sys_log, "SYS");
 
 extern void pad_state_notify_state_change(usz index, u32 state);
@@ -595,12 +598,21 @@ void pad_thread::operator()()
 			- do "real math" to calculate the axis values (123/90°/sec; Clamp0To1023)
 			- allow configuration for what gyro axes are configured to what stick axes
 		*/
+		// The stick is treated as a tilt angle and turned into the gravity vector a DS3 would measure.
+		// On a DS3, sensor Y is the vertical axis (399 = -1G when flat) and sensor Z is the forward/back axis,
+		// so pitch has to show up on Z. Driving Y alone can't tell forward from backward tilt.
 		for (u32 i = 0; i < connected_devices; i++)
 		{
 			const auto& pad = m_pads[i];
 
-			pad->m_sensors[0].m_value = (512 + (pad->m_sticks[0].m_value - 127.5f));
-			pad->m_sensors[1].m_value = (399 + (pad->m_sticks[1].m_value - 127.5f) * 2);
+			// Full deflection = 90 degrees. Stick Y is 0 at the top, so pushing up pitches the pad upwards.
+			constexpr f32 max_tilt = std::numbers::pi_v<f32> / 2.0f;
+			const f32 roll  = (pad->m_sticks[0].m_value - 127.5f) / 127.5f * max_tilt;
+			const f32 pitch = (127.5f - pad->m_sticks[1].m_value) / 127.5f * max_tilt;
+
+			pad->m_sensors[0].m_value = static_cast<u16>(512.0f + MOTION_ONE_G * std::sin(roll));
+			pad->m_sensors[1].m_value = static_cast<u16>(512.0f - MOTION_ONE_G * std::cos(roll) * std::cos(pitch));
+			pad->m_sensors[2].m_value = static_cast<u16>(512.0f + MOTION_ONE_G * std::sin(pitch));
 		}
 
 		thread_ctrl::wait_for(pad_sleep);
